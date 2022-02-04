@@ -128,7 +128,7 @@ class VariableNode(GenericNode):
         (trivial) check node zero to uninformative measure.
         """
         for neighborid in super().neighbors:
-            self.setstate(neighborid, np.ones(self.__MessageLength, dtype=float))
+            self.setstate(neighborid, np.zeros(self.__MessageLength, dtype=float))
         # self.setobservation(self, np.ones(self.__MessageLength, dtype=float))
 
     def getobservation(self):
@@ -245,8 +245,9 @@ class CheckNodeBinary(GenericNode):
         :param varneighborid: Variable node identifier of destination
         :return: Outgoing belief measure
         """
-
+        #print(varneighborid)
         dictionary = self.getstates()
+        #print(dictionary)
         if varneighborid is None:
             states = list(dictionary.values())
         elif varneighborid in dictionary:
@@ -254,86 +255,7 @@ class CheckNodeBinary(GenericNode):
         else:
             print('Destination variable node ID ' + str(varneighborid) + ' is not a neighbor.')
             return None
-
-        if np.isscalar(states):
-            return states
-        else:
-            states = np.array(states)
-            states = states / np.sum(states, axis=1).reshape((-1, 1))
-        
-        delta = np.product(states[:, 0] - states[:, 1])
-        return 0.5*np.array([1+delta, 1-delta])
-
-
-class CheckNodeFFT(GenericNode):
-    """
-    Class @class CheckNodeFFT creates a single check node within bipartite factor graph.
-    This class relies on fast Fourier transform.
-    """
-
-    def __init__(self, checknodeid, messagelength, neighbors=None):
-        """
-        Initialize check node of type @class CheckNodeFFT.
-        :param checknodeid: Unique identifier for check node
-        :param messagelength: Length of incoming and outgoing messages
-        :param neighbors: Neighbors of node @var checknodeid in bipartite graph
-        """
-
-        super().__init__(checknodeid, neighbors)
-        # Length of messages
-        self.__MessageLength = messagelength
-
-    def reset(self):
-        """
-        Reset every states check node to uninformative measures (FFT of all ones)
-        """
-        uninformative = np.fft.rfft(np.ones(self.__MessageLength, dtype=float))
-        # The length of np.fft.rfft is NOT self.__MessageLength.
-        for neighborid in self.neighbors:
-            self.setstate(neighborid, uninformative)
-
-    def setmessagefromvar(self, varneighborid, message):
-        """
-        Incoming message from variable node neighbor @var vaneighborid to check node self.
-        :param varneighborid: Variable node identifier of origin
-        :param message: Incoming belief vector
-        """
-        self.setstate(varneighborid, np.fft.rfft(message))
-
-    def getmessagetovar(self, varneighborid):
-        """
-        Outgoing message from check node self to variable node @var varneighbor
-        :param varneighborid: Variable node identifier of destination
-        :return: Outgoing belief vector
-        """
-        dictionary = self.getstates()
-        if varneighborid is None:
-            states = list(dictionary.values())
-        elif varneighborid in dictionary:
-            states = [dictionary[key] for key in dictionary if key is not varneighborid]
-        else:
-            print('Destination variable node ID ' + str(varneighborid) + ' is not a neighbor.')
-            return None
-        if np.isscalar(states):
-            return states
-        else:
-            states = np.array(states)
-            if states.ndim == 1:
-                outgoing_fft = states
-            elif states.ndim == 2:
-                try:
-                    outgoing_fft = np.prod(states, axis=0)
-                except ValueError as e:
-                    print(e)
-                    return None
-            else:
-                raise RuntimeError('states.ndim = ' + str(np.array(states).ndim) + ' is not allowed.')
-            outgoing = np.fft.irfft(outgoing_fft, axis=0)
-        # The outgoing message values should be indexed using the modulo operation.
-        # This is implemented by retaining the value at zero and flipping the order of the remaining vector
-        # That is, for n > 0, outgoing[-n % m] = np.flip(outgoing[1:])[n]
-        outgoing[1:] = np.flip(outgoing[1:])  # This is implementing the required modulo operation
-        return outgoing
+        return states
 
 
 class BipartiteGraph:
@@ -352,7 +274,7 @@ class BipartiteGraph:
         # Number of bits per section.
         self.__seclength = seclength
         # Length of index vector for every section.
-        self.__sparseseclength = 2 ** self.seclength
+        #self.__sparseseclength = 2 ** self.seclength
 
         # Dictionary of identifiers and nodes for check nodes in bipartite graph.
         self.__CheckNodes = dict()
@@ -365,13 +287,13 @@ class BipartiteGraph:
             # Identifier @var checknodeid = 0 is reserved for the local observation at every variable node.
             checknodeid = idx + 1
             # Create check nodes and add them to dictionary @var self.__CheckNodes.
-            self.__CheckNodes.update({checknodeid: CheckNodeFFT(checknodeid, messagelength=self.sparseseclength)})
+            self.__CheckNodes.update({checknodeid: CheckNodeBinary(checknodeid, messagelength=self.seclength)})
             # Add edges from check nodes to variable nodes.
             self.__CheckNodes[checknodeid].addneighbors(check2varedges[idx])
             # Create variable nodes and add them to dictionary @var self.__VarNodes.
             for varnodeid in check2varedges[idx]:
                 if varnodeid not in self.__VarNodes:
-                    self.__VarNodes[varnodeid] = VariableNode(varnodeid, messagelength=self.sparseseclength)
+                    self.__VarNodes[varnodeid] = VariableNode(varnodeid, messagelength=self.seclength)
                 else:
                     pass
                 # Add edges from variable nodes to check nodes.
@@ -383,7 +305,7 @@ class BipartiteGraph:
 
     @property
     def sparseseclength(self):
-        return self.__sparseseclength
+        return self.__seclength
 
     @property
     def checklist(self):
@@ -436,7 +358,7 @@ class BipartiteGraph:
         Belief vectors are sorted according to @var varnodeid.
         :return: Array of local observations from all variable nodes
         """
-        observations = np.empty((self.varcount, self.sparseseclength), dtype=float)
+        observations = np.empty((self.varcount, self.seclength), dtype=float)
         idx = 0
         for varnodeid in self.varlist:
             observations[idx] = self.getvarnode(varnodeid).getobservation()
@@ -444,14 +366,14 @@ class BipartiteGraph:
         return observations
 
     def setobservation(self, varnodeid, measure):
-        if (len(measure) == self.sparseseclength) and (varnodeid in self.varlist):
+        if (1 == self.seclength) and (varnodeid in self.varlist):
             self.getvarnode(varnodeid).setobservation(measure)
         else:
             print('The assignment did not succeed.')
             print('Variable Node ID: ' + str(varnodeid))
             print('Variable Node Indices: ' + str(self.varlist))
-            print('Length Measure: ' + str(len(measure)))
-            print('Length Sparse Section: ' + str(self.sparseseclength))
+            print('Length Measure: ' + str((measure)))
+            print('Length Sparse Section: ' + str(self.seclength))
 
     def updatechecks(self, checknodelist=None):
         """
@@ -519,11 +441,11 @@ class BipartiteGraph:
                 checknode = self.getchecknode(checknodeid)
                 measure = checknode.getmessagetovar(varnode.id)
 
-                weight = np.linalg.norm(measure, ord=1)
+                """weight = np.linalg.norm(measure, ord=1)
                 if weight != 0:
                     measure = measure / weight
                 else:
-                    pass
+                    pass"""
                 varnode.setmessagefromcheck(checknodeid, measure)
         return list(checkneighborsaggregate)
 
@@ -541,7 +463,7 @@ class BipartiteGraph:
         Belief vectors are sorted according to @var varnodeid.
         :return: Array of belief vectors from all variable nodes
         """
-        estimates = np.empty((self.varcount, self.sparseseclength), dtype=float)
+        estimates = np.empty((self.varcount, self.seclength), dtype=float)
         idx = 0
         for varnodeid in self.varlist:
             estimates[idx] = self.getvarnode(varnodeid).getestimate()
@@ -587,7 +509,7 @@ class BipartiteGraph:
         """
 
         # Resize @var stateestimates to match local measures from variable nodes.
-        stateestimates.resize(self.varcount, self.sparseseclength)
+        stateestimates.resize(self.varcount, self.seclength)
         thresholdedestimates = np.zeros(stateestimates.shape)
 
         # Retain most likely values in every section.
@@ -611,7 +533,7 @@ class BipartiteGraph:
             print('Root section ID: ' + str(topidx))
             # Reset graph, including check nodes, is critical for every root location.
             self.reset()
-            rootsingleton = np.zeros(self.sparseseclength)
+            rootsingleton = np.zeros(self.seclength)
             rootsingleton[topidx] = 1 if (thresholdedestimates[0, topidx] != 0) else 0
             self.setobservation(1, rootsingleton)
             for idx in range(1, self.varcount):
@@ -638,7 +560,7 @@ class BipartiteGraph:
                     if np.isclose(currentweight1, np.amax(currentmeasure)):
                         varnodes2update = varnodes2update - {varnodeid}
                         checkneighbors.update(self.getvarnode(varnodeid).neighbors)
-                        singleton = np.zeros(self.sparseseclength)
+                        singleton = np.zeros(self.seclength)
                         if np.isclose(currentweight1, 0):
                             pass
                         else:
@@ -673,7 +595,7 @@ class BipartiteGraph:
         likelihoods = []
         for candidate in recoveredcodewords:
             isolatedvalues = np.prod((candidate, stateestimates.flatten()), axis=0)
-            isolatedvalues.resize(self.varcount, self.sparseseclength)
+            isolatedvalues.resize(self.varcount, self.seclength)
             likelihoods.append(np.prod(np.amax(isolatedvalues, axis=1)))
         idxsorted = np.argsort(likelihoods)
         recoveredcodewords = [recoveredcodewords[idx] for idx in idxsorted[::-1]]
@@ -699,7 +621,7 @@ class Encoding(BipartiteGraph):
         paritycheckmatrix = np.array(paritycheckmatrix)
         print('Size of parity check matrix: ' + str(paritycheckmatrix.shape))
         print('Rank of parity check matrix: ' + str(np.linalg.matrix_rank(paritycheckmatrix)))
-
+       
         if infonodeindices is None:
             systematicmatrix = self.eliminationgf2(paritycheckmatrix)
             print(systematicmatrix)
@@ -797,10 +719,10 @@ class Encoding(BipartiteGraph):
         Codeword sections are sorted according to @var varnodeid.
         :return: Codeword in sections
         """
-        codeword = np.empty((self.varcount, self.sparseseclength), dtype=int)
+        codeword = np.empty((self.varcount, self.seclength), dtype=int)
         idx = 0
         for varnodeid in self.varlist:
-            block = np.zeros(self.sparseseclength, dtype=int)
+            block = np.zeros(self.seclength, dtype=int)
             if not np.isclose(np.max(self.getestimate(varnodeid)), 0):
                 block[np.argmax(self.getestimate(varnodeid))] = 1
             codeword[idx] = block
@@ -816,23 +738,23 @@ class Encoding(BipartiteGraph):
             bits = np.array(bits).reshape((self.infocount, self.seclength))
             # Container for fragmented message bits.
             # Initialize variable nodes within information node indices
-            codewordsparse = np.zeros((self.varcount, self.sparseseclength))
+            codewordsparse = np.zeros((self.varcount, self.seclength))
             for idx in range(self.infocount):
                 # Compute index of fragment @var varnodeid
-                fragment = np.inner(bits[idx], 2 ** np.arange(self.seclength)[::-1])
+                fragment = np.inner(bits[idx], 2**np.arange(self.seclength)[::-1])
                 # Set sparse representation to all zeros, except for proper location.
-                sparsefragment = np.zeros(self.sparseseclength, dtype=int)
-                sparsefragment[fragment] = 1
-                # Add sparse section to codeword.
-                codewordsparse[self.__infocolindices[idx]] = sparsefragment
+                """sparsefragment = np.zeros(self.seclength, dtype=int)
+                sparsefragment[fragment] = 1"""
+                # Add sparse section to codeword."""
+                codewordsparse[self.__infocolindices[idx]] = fragment
             for idx in range(self.paritycount):
-                parity = np.remainder(self.__pc_info[idx, :] @ bits, 2)
-                fragment = np.inner(parity, 2 ** np.arange(self.seclength)[::-1])
+                parity = np.remainder(self.__pc_info[idx, :] @ bits,2)
+                fragment = np.inner(parity, 2**np.arange(self.seclength)[::-1])
                 # Set sparse representation to all zeros, except for proper location.
-                sparsefragment = np.zeros(self.sparseseclength, dtype=int)
+                """sparsefragment = np.zeros(self.seclength, dtype=int)
                 sparsefragment[fragment] = 1
-                # Add sparse section to codeword.
-                codewordsparse[self.__paritycolindices[idx]] = sparsefragment
+                Add sparse section to codeword."""
+                codewordsparse[self.__paritycolindices[idx]] = fragment
             codeword = np.array(codewordsparse).flatten()
             return codeword
         else:
@@ -862,7 +784,7 @@ class Encoding(BipartiteGraph):
                 # Compute index of fragment @var varnodeid
                 fragment = np.inner(bitsections[varnodeid], 2 ** np.arange(self.seclength)[::-1])
                 # Set sparse representation to all zeros, except for proper location.
-                sparsefragment = np.zeros(self.sparseseclength, dtype=int)
+                sparsefragment = np.zeros(self.seclength, dtype=int)
                 sparsefragment[fragment] = 1
                 # Set local observation for systematic variable nodes.
                 self.setobservation(varnodeid, sparsefragment)
@@ -926,7 +848,7 @@ class Encoding(BipartiteGraph):
         This method encodes multiple messages into a signal
         :param infoarray: array of binary messages to be encoded
         """
-        signal = np.zeros(self.sparseseclength * self.varcount, dtype=float)
+        signal = np.zeros(self.seclength * self.varcount, dtype=float)
         for messageindex in range(len(infoarray)):
             signal = signal + self.encodemessageBP(infoarray[messageindex])
         return signal
@@ -935,9 +857,9 @@ class Encoding(BipartiteGraph):
         # Reinitialize factor graph to ensure there are no lingering states.
         # Node states are set to uninformative measures.
         self.reset()
-        if (len(codeword) == (self.varcount * self.sparseseclength)) and (
+        if (len(codeword) == (self.varcount * self.seclength)) and (
                 np.linalg.norm(codeword, ord=0) == self.varcount):
-            sparsesections = codeword.reshape((self.varcount, self.sparseseclength))
+            sparsesections = codeword.reshape((self.varcount, self.seclength))
             # Container for fragmented message bits.
             idx = 0
             for varnodeid in self.varlist:
