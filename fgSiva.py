@@ -169,11 +169,11 @@ class VariableNode(GenericNode):
         else:
             print('Destination check node ID ' + str(checkneighborid) + ' is not a neighbor.')
             return None
-
+        states = np.sum(np.array(states))
+        #print("Hello",states)
         if np.isscalar(states):
             return states
         else:
-            states = np.array(states)
             if states.ndim == 1:
                 return states
             elif states.ndim == 2:
@@ -226,7 +226,7 @@ class CheckNodeBinary(GenericNode):
         """
         Reset check nodes to uninformative measures
         """
-        uninformative = np.ones(self.__MessageLength)
+        uninformative = np.zeros(self.__MessageLength)
         for neighborid in self.neighbors:
             self.setstate(neighborid, uninformative)
 
@@ -247,6 +247,7 @@ class CheckNodeBinary(GenericNode):
         """
         #print(varneighborid)
         dictionary = self.getstates()
+        #print("First",dictionary)
         #print(dictionary)
         if varneighborid is None:
             states = list(dictionary.values())
@@ -255,6 +256,8 @@ class CheckNodeBinary(GenericNode):
         else:
             print('Destination variable node ID ' + str(varneighborid) + ' is not a neighbor.')
             return None
+        #print("Second",states)
+        states=2*np.arctanh(np.prod(np.tanh(np.array(states)/2)))
         return states
 
 
@@ -366,7 +369,7 @@ class BipartiteGraph:
         return observations
 
     def setobservation(self, varnodeid, measure):
-        if (1 == self.seclength) and (varnodeid in self.varlist):
+        if (varnodeid in self.varlist):
             self.getvarnode(varnodeid).setobservation(measure)
         else:
             print('The assignment did not succeed.')
@@ -495,116 +498,6 @@ class BipartiteGraph:
         for checknodeid in self.checklist:
             print('Check Node ID ' + str(checknodeid), end=": ")
             print(self.getchecknode(checknodeid).getstates())
-
-    def decoder(self, stateestimates, count, includelikelihoods=False):  # NEED ORDER OUTPUT IN LIKELIHOOD MAYBE
-        """
-        This method seeks to disambiguate codewords from node states.
-        Gather local state estimates from variables nodes and retain top values in place.
-        Set values of other indices within every section to zero.
-        Perform belief propagation and return `count` likely codewords.
-        :param stateestimates: Local estimates from variable nodes.
-        :param count: Maximum number of codewords returned.
-        :param includelikelihoods: boolean flag of whether to return likelihoods of decoded words.
-        :return: List of likely codewords.
-        """
-
-        # Resize @var stateestimates to match local measures from variable nodes.
-        stateestimates.resize(self.varcount, self.seclength)
-        thresholdedestimates = np.zeros(stateestimates.shape)
-
-        # Retain most likely values in every section.
-        for idx in range(self.varcount):
-            # Function np.argpartition puts indices of top arguments at the end (unordered).
-            # Variable @var trailingtopindices holds these arguments.
-            trailingtopindices = np.argpartition(stateestimates[idx], -count)[-count:]  # CHECK count or 1024
-            # Retain values corresponding to top indices and zero out other entries.
-            for topidx in trailingtopindices:
-                thresholdedestimates[idx, topidx] = stateestimates[idx, topidx]
-
-        # Find `count` most likely locations in every section and zero out the rest.
-        # List of candidate codewords.
-        recoveredcodewords = []
-        # Function np.argpartition puts indices of top arguments at the end.
-        # If count differs from above argument, then call np.argpartition again because top output are not ordered.
-        # Indices of `count` most likely locations in root section
-        trailingtopindices = np.argpartition(thresholdedestimates[0, :], -count)[-count:]
-        # Iterating through evey retained location in root section
-        for topidx in trailingtopindices:
-            print('Root section ID: ' + str(topidx))
-            # Reset graph, including check nodes, is critical for every root location.
-            self.reset()
-            rootsingleton = np.zeros(self.seclength)
-            rootsingleton[topidx] = 1 if (thresholdedestimates[0, topidx] != 0) else 0
-            self.setobservation(1, rootsingleton)
-            for idx in range(1, self.varcount):
-                self.setobservation(idx + 1, thresholdedestimates[idx, :])
-
-            ## This may only work for hierchical settings.
-
-            # Start with full list of nodes to update.
-            checknodes2update = set(self.checklist)
-            self.updatechecks(checknodes2update)  # Update Check first
-            varnodes2update = set(self.varlist)
-            self.updatevars(varnodes2update)
-
-            for iteration in range(self.maxdepth):  # Max depth
-                sectionweights0 = np.linalg.norm(self.getestimates(), ord=0, axis=1)
-                checkneighbors = set()
-                varneighbors = set()
-
-                # Update variable nodes and check for convergence
-                self.updatevars(varnodes2update)
-                for varnodeid in varnodes2update:
-                    currentmeasure = self.getestimate(varnodeid)
-                    currentweight1 = np.linalg.norm(currentmeasure, ord=1)
-                    if np.isclose(currentweight1, np.amax(currentmeasure)):
-                        varnodes2update = varnodes2update - {varnodeid}
-                        checkneighbors.update(self.getvarnode(varnodeid).neighbors)
-                        singleton = np.zeros(self.seclength)
-                        if np.isclose(currentweight1, 0):
-                            pass
-                        else:
-                            singleton[np.argmax(currentmeasure)] = 1 if (thresholdedestimates[0, topidx] != 0) else 0
-                        self.setobservation(varnodeid, singleton)
-                if checkneighbors != set():
-                    self.updatechecks(checkneighbors)
-                # print('Variable nodes to update: ' + str(varnodes2update))
-
-                # Update check nodes and check for convergence
-                self.updatechecks(checknodes2update)
-                for checknodeid in checknodes2update:
-                    if set(self.getchecknode(checknodeid).neighbors).isdisjoint(varnodes2update):
-                        checknodes2update = checknodes2update - {checknodeid}
-                        varneighbors.update(self.getchecknode(checknodeid).neighbors)
-                if varneighbors != set():
-                    self.updatevars(varneighbors)
-                # print('Check nodes to update: ' + str(checknodes2update))
-
-                # Monitor progress and break, if appropriate
-                newsectionweights0 = np.linalg.norm(self.getestimates(), ord=0, axis=1)
-                if np.amin(newsectionweights0) == 0 or len(varnodes2update) == 0:
-                    break
-                else:
-                    pass
-
-            decoded = self.getcodeword().flatten()
-            if not np.isscalar(self.testvalid(decoded)):
-                recoveredcodewords.append(decoded)
-
-        # Order candidates
-        likelihoods = []
-        for candidate in recoveredcodewords:
-            isolatedvalues = np.prod((candidate, stateestimates.flatten()), axis=0)
-            isolatedvalues.resize(self.varcount, self.seclength)
-            likelihoods.append(np.prod(np.amax(isolatedvalues, axis=1)))
-        idxsorted = np.argsort(likelihoods)
-        recoveredcodewords = [recoveredcodewords[idx] for idx in idxsorted[::-1]]
-
-        if includelikelihoods:
-            sortedlikelihoods = [likelihoods[idx] for idx in idxsorted[::-1]]
-            return recoveredcodewords, sortedlikelihoods
-        else:
-            return recoveredcodewords
 
 
 class Encoding(BipartiteGraph):
@@ -760,98 +653,6 @@ class Encoding(BipartiteGraph):
         else:
             print('Length of input array is not ' + str(self.infocount * self.seclength))
             print('Number of information sections is ' + str(self.infocount))
-
-    def encodemessageBP(self, bits):
-        """
-        This method performs systematic encoding through belief propagation.
-        Bipartite graph is initialized: local observations for information blocks are derived from message sequence,
-        parity states are set to all ones.
-        :param bits: Information bits comprising original message
-        """
-        if len(bits) == (self.infocount * self.seclength):
-            bits = np.array(bits).reshape((self.infocount, self.seclength))
-            # Container for fragmented message bits.
-            bitsections = dict()
-            # Reinitialize factor graph to ensure there are no lingering states.
-            # Node states are set to uninformative measures.
-            self.reset()
-            idx = 0
-            # Initialize variable nodes within information node indices
-            for varnodeid in self.infolist:
-                # Message bits corresponding to fragment @var varnodeid.
-                bitsections.update({varnodeid: bits[idx]})
-                idx = idx + 1
-                # Compute index of fragment @var varnodeid
-                fragment = np.inner(bitsections[varnodeid], 2 ** np.arange(self.seclength)[::-1])
-                # Set sparse representation to all zeros, except for proper location.
-                sparsefragment = np.zeros(self.seclength, dtype=int)
-                sparsefragment[fragment] = 1
-                # Set local observation for systematic variable nodes.
-                self.setobservation(varnodeid, sparsefragment)
-                # print('Variable node ' + str(varnodeid), end=' ')
-                # print(' -- Observation changed to: ' + str(np.argmax(self.getobservation(varnodeid))))
-            # Start with full list of check nodes to update.
-            checknodes2update = set(self.checklist)
-            self.updatechecks(checknodes2update)
-            # Start with list of parity variable nodes to update.
-            varnodes2update = set(self.varlist)
-            self.updatevars(varnodes2update)
-            # The number of parity variable nodes acts as upper bound.
-            for iteration in range(self.paritycount):
-                checkneighbors = set()
-                varneighbors = set()
-
-                # Update check nodes and check for convergence
-                self.updatechecks(checknodes2update)
-                for checknodeid in checknodes2update:
-                    checknode = self.getchecknode(checknodeid)
-                    if set(checknode.neighbors).isdisjoint(varnodes2update):
-                        checknodes2update = checknodes2update - {checknode.id}
-                        varneighbors.update(checknode.neighbors)
-                if varneighbors != set():
-                    self.updatevars(varneighbors)
-
-                # Update variable nodes and check for convergence
-                self.updatevars(varnodes2update)
-                for varnodeid in varnodes2update:
-                    currentmeasure = self.getestimate(varnodeid)
-                    currentweight1 = np.linalg.norm(currentmeasure, ord=1)
-                    if currentweight1 == 1:
-                        varnodes2update = varnodes2update - {varnodeid}
-                        checkneighbors.update(self.getvarnode(varnodeid).neighbors)
-                if checkneighbors != set():
-                    self.updatechecks(checkneighbors)
-
-                if np.array_equal(np.linalg.norm(np.rint(self.getestimates()), ord=0, axis=1), [1] * self.varcount):
-                    break
-
-            self.updatechecks()
-            # print(np.linalg.norm(np.rint(self.getestimates()), ord=0, axis=1))
-            codeword = np.rint(self.getestimates()).flatten()
-            return codeword
-        else:
-            print('Length of input array is not ' + str(self.infocount * self.seclength))
-
-    def encodemessages(self, infoarray):
-        """
-        This method encodes multiple messages into codewords by performing systematic encoding
-        and belief propagation on each individual message.
-        :param infoarray: array of binary messages to be encoded
-        """
-        codewords = []
-        for messageindex in range(len(infoarray)):
-            codewords.append(self.encodemessageBP(infoarray[messageindex]))
-        return np.asarray(codewords)
-
-    def encodesignal(self, infoarray):
-        """
-        This method encodes multiple messages into a signal
-        :param infoarray: array of binary messages to be encoded
-        """
-        signal = np.zeros(self.seclength * self.varcount, dtype=float)
-        for messageindex in range(len(infoarray)):
-            signal = signal + self.encodemessageBP(infoarray[messageindex])
-        return signal
 
     def testvalid(self, codeword):  # ISSUE IN USING THIS FOR NOISY CODEWORDS, INPUT SHOULD BE MEASURE
         # Reinitialize factor graph to ensure there are no lingering states.
